@@ -1,13 +1,5 @@
-<<<<<<< HEAD
 streamlit
 python-docx
 pandas
 numpy
 scikit-learn
-=======
-streamlit
-python-docx
-pandas
-numpy
-scikit-learn
->>>>>>> 95764a56dc1047e26a38885dc79679785849ec12
