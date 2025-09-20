@@ -4,9 +4,10 @@ from io import BytesIO
 import difflib
 import re
 
+# Configure app layout and appearance
 st.set_page_config(page_title="AI Resume Optimizer", page_icon="📝", layout="wide")
 
-# -- Custom Dark Theme Styling --
+# CSS: Dark theme styling
 st.markdown("""
     <style>
         html, body, [class*="css"] { background-color: #181a20 !important; color: #eee !important; }
@@ -42,7 +43,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# -- Skill sets
+# Skills and synonyms dictionary
 CANONICAL_SKILLS = [
     "python", "pytorch", "tensorflow", "scikit-learn", "pandas",
     "numpy", "sql", "nlp", "computer vision", "ocr", "transformers",
@@ -70,7 +71,7 @@ EXAMPLE_TASKS = {
     "data infrastructure": "kept calm and used ETL on ugly CSVs."
 }
 
-# -- Helper Functions
+# Helper functions
 def normalize(text):
     return re.sub(r'[^a-z0-9]', '', text.lower())
 
@@ -127,7 +128,6 @@ def insert_to_resume(docx_file, skills_to_add, bullets_to_add):
     buf_in = BytesIO(docx_file.getvalue())
     doc = Document(buf_in)
 
-    # Add skills to skills section without breaking format
     p_skill = find_skills_section(doc)
     if p_skill and skills_to_add:
         runs = p_skill.runs
@@ -147,7 +147,6 @@ def insert_to_resume(docx_file, skills_to_add, bullets_to_add):
             run.text = ""
         p_skill.add_run(full_line)
 
-    # Add bullets as new section at the end with bullet formatting
     if bullets_to_add:
         doc.add_paragraph("")
         doc.add_paragraph("--- Added Skills / Projects ---")
@@ -168,8 +167,7 @@ def get_score_comment(score):
         return "Not bad—few more tweaks and you'll pop."
     return "🔥 You’re basically LinkedIn verified..."
 
-# -- Streamlit App UI/UX ---
-
+# Streamlit UI
 st.title("AI Resume Optimizer")
 st.markdown("""
 Every resume needs a hero arc.  
@@ -196,7 +194,8 @@ if job_desc and file_up:
             <span style="font-size:2.2rem;color:#33ffe0;font-weight:700">{role_fit}%</span><br>
             <span style="color:#bebee7;font-size:1.07rem">{get_score_comment(role_fit)}</span>
         </div>""", unsafe_allow_html=True)
-        st.progress(role_fit)
+        # Correct: st.progress() expects 0.0-1.0 float, not percentage
+        st.progress(role_fit / 100)
 
         st.markdown(f"<div class='skill-section'><b>✅ Matched Skills:</b> {', '.join(matched_skills) if matched_skills else 'None (Oof).'}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='missing-section'><b>⚠️ Missing Skills:</b> {', '.join(missing_skills) if missing_skills else 'All there. You’re a unit!'}</div>", unsafe_allow_html=True)
