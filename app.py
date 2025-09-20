@@ -1,102 +1,217 @@
 import streamlit as st
 from docx import Document
+from io import BytesIO
 import difflib
 import re
-import os
-import tempfile
+from collections import Counter
 
-st.set_page_config(page_title="AI Resume Optimizer", layout="wide", page_icon="📝")
+st.set_page_config(page_title="AI Resume Optimizer", page_icon="📝", layout="wide")
 
-# --- Function to extract text from DOCX ---
-def extract_text_from_docx(file):
-    doc = Document(file)
-    fullText = []
-    for para in doc.paragraphs:
-        fullText.append(para.text)
-    return "\n".join(fullText)
+# Dark theme CSS
+st.markdown("""
+    <style>
+        html, body, [class*="css"] { background-color: #181a20 !important; color: #eee !important; }
+        .score-bar-container {
+            background: #242739; border-radius: 13px; padding: 24px 34px;
+            margin-bottom: 14px; text-align: center; 
+        }
+        .score-label {
+            color: #65ffb6; font-weight: 700; font-size: 1.25rem;
+            letter-spacing: 0.1rem;
+        }
+        .stProgress > div > div > div > div {
+            background-color: #249e79 !important;
+        }
+        .skill-section {
+            background: #1b2430; border-radius: 9px; padding: 12px 19px;
+            margin-bottom: 9px; color: #68a6ff; font-size: 1rem;
+        }
+        .missing-section {
+            background: #44252d; border-radius: 9px; padding: 12px 19px;
+            margin-bottom: 9px; color: #ff8989;
+        }
+        .suggest-box {
+            background: #1c212d; border-radius: 11px; padding: 17px 23px;
+            margin-bottom: 14px; color: #dbdbdb; font-size: 1.02rem;
+            box-shadow: 0 2px 12px #1a242b85;
+        }
+        .keyword-density-table th, .keyword-density-table td {
+            padding: 6px 12px;
+            border-bottom: 1px solid #444;
+        }
+        .keyword-density-table th {
+            color: #65ffb6;
+        }
+        .keyword-density-good {
+            color: #70ea98;
+            font-weight: 600;
+        }
+        .keyword-density-low {
+            color: #e5e020;
+            font-weight: 600;
+        }
+        .keyword-density-high {
+            color: #ff5c5c;
+            font-weight: 700;
+        }
+        .stButton>button {
+            background-color: #3686e0 !important; color: #fff !important;
+            border-radius: 7px !important; font-weight: 500;
+            letter-spacing: 0.03em; margin-top: 8px; font-size: 1rem;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-# --- Function to calculate matched & missing skills ---
-def get_skills_match(resume_text, jd_text):
-    resume_words = set(re.findall(r'\w+', resume_text.lower()))
-    jd_words = set(re.findall(r'\w+', jd_text.lower()))
-    
-    matched_skills = list(resume_words & jd_words)
-    missing_skills = list(jd_words - resume_words)
-    
-    return matched_skills, missing_skills
+CANONICAL_SKILLS = [
+    "python", "pytorch", "tensorflow", "scikit-learn", "pandas",
+    "numpy", "sql", "nlp", "computer vision", "ocr", "transformers",
+    "huggingface", "onnx", "triton", "docker", "streamlit",
+    "fastapi", "data infrastructure", "model deployment"
+]
+SYNONYMS = {
+    "pytorch": ["torch"],
+    "nlp": ["natural language processing"],
+    "computer vision": ["cv", "vision"],
+    "transformers": ["hugging face"],
+    "onnx": ["onnxruntime"],
+    "ocr": ["tesseract", "optical character recognition"],
+    "model deployment": ["deploy", "deployment"],
+    "data infrastructure": ["data pipeline", "etl"]
+}
+EXAMPLE_TASKS = {
+    "pytorch": "trained a CNN on some real images—kinda like magic, but nerdier.",
+    "nlp": "built text classification pipelines (bots can read, too).",
+    "computer vision": "taught a computer to see (‘cause eyes are overrated).",
+    "ocr": "converted chaos (scans) into data zen.",
+    "model deployment": "shipped models as legit APIs. Recruiters will love it.",
+    "data infrastructure": "kept calm and used ETL on ugly CSVs."
+}
 
-# --- Function to generate suggested bullets ---
-def generate_suggestions(missing_skills):
-    suggestions = [f"Consider highlighting {skill}" for skill in missing_skills]
-    return suggestions
+def normalize(text):
+    return re.sub(r'[^a-z0-9]', '', text.lower())
 
-# --- Function to update DOCX resume ---
-def update_resume(file, selected_suggestions):
-    doc = Document(file)
-    # Find Skills section and update
-    skills_updated = False
-    for para in doc.paragraphs:
-        if "Skills" in para.text or "SKILLS" in para.text:
-            if not skills_updated:
-                for skill in selected_suggestions:
-                    para.add_run(f", {skill}")
-                skills_updated = True
-    # If no skills section, add at end
-    if not skills_updated:
-        doc.add_paragraph("Skills: " + ", ".join(selected_suggestions))
-    
-    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
-    doc.save(tmp_file.name)
-    return tmp_file.name
+def create_suggestion(skill):
+    ex = EXAMPLE_TASKS.get(skill.lower())
+    return f"Implemented {skill}: {ex}" if ex else f"Worked with {skill}: add a project snippet."
 
-# --- UI Layout ---
-st.title("📝 AI Resume Optimizer")
-st.markdown("Optimize your resume according to Job Description (JD) automatically!")
+def get_jd_skills(jd_text):
+    norm_jd = normalize(jd_text)
+    return [s for s in CANONICAL_SKILLS if normalize(s) in norm_jd or any(normalize(syn) in norm_jd for syn in SYNONYMS.get(s, []))]
 
-# JD Input first
-jd_text = st.text_area("Paste Job Description here", height=200)
+def compute_fit_score(jd_skills, resume_text):
+    score = 0
+    matched = []
+    for skill in jd_skills:
+        synonyms = [skill] + SYNONYMS.get(skill, [])
+        found = False
+        for target in synonyms:
+            if normalize(target) in normalize(resume_text):
+                found = True
+                break
+            for word in resume_text.split():
+                if difflib.SequenceMatcher(None, normalize(word), normalize(target)).ratio() > 0.74:
+                    found = True
+                    break
+            if found:
+                break
+        if found:
+            matched.append(skill)
+            score += 1
+    denom = max(len(jd_skills), 1)
+    return round(100.0 * score / denom, 1), matched
 
-# Resume Upload second
-uploaded_file = st.file_uploader("Upload your resume (.docx)", type=["docx"])
+def feedback_text(score):
+    if score < 40:
+        return "☠️ Major gap alert - time to skill up!"
+    if score < 65:
+        return "Good start, but recruiters want more action."
+    if score < 80:
+        return "Almost there - polish a few more skills."
+    return "🔥 You’re shining, time for interviews!"
 
-# Process Button
-if st.button("Process") and uploaded_file and jd_text:
-    resume_text = extract_text_from_docx(uploaded_file)
-    
-    # Skills matching
-    matched_skills, missing_skills = get_skills_match(resume_text, jd_text)
-    
-    # Role fit score (simple ratio)
-    role_fit = round(len(matched_skills) / (len(matched_skills) + len(missing_skills) + 1e-5) * 100, 2)
-    
-    # --- Display Results ---
-    col1, col2, col3 = st.columns([1,1,1])
-    
-    with col1:
-        st.markdown(f"<div style='background-color:#33ffe0;padding:10px;border-radius:8px'>"
-                    f"<b>✅ Matched Skills:</b><br>{', '.join(matched_skills)}</div>", unsafe_allow_html=True)
-    with col2:
-        st.markdown(f"<div style='background-color:#ff4d4d;padding:10px;border-radius:8px'>"
-                    f"<b>⚠️ Missing Skills:</b><br>{', '.join(missing_skills)}</div>", unsafe_allow_html=True)
-    with col3:
-        st.markdown(f"<div style='background-color:#ffe633;padding:10px;border-radius:8px'>"
-                    f"<b>Role Fit Score:</b> {role_fit}%</div>", unsafe_allow_html=True)
-        st.progress(role_fit / 100)  # Corrected here
-    
-    # Suggestions Section
-    suggestions = generate_suggestions(missing_skills)
-    st.markdown("<h4 style='color:#33ccff'>💡 Suggested Improvements:</h4>", unsafe_allow_html=True)
-    selected_suggestions = st.multiselect("Select suggestions to add to your resume", suggestions)
-    
-    # Button to update resume
-    if selected_suggestions:
-        if st.button("Update Resume with selected suggestions"):
-            updated_resume_path = update_resume(uploaded_file, selected_suggestions)
-            with open(updated_resume_path, "rb") as f:
-                st.download_button(
-                    label="Download Updated Resume",
-                    data=f,
-                    file_name="Updated_Resume.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
-            st.success("✅ Resume updated successfully!")
+def compute_keyword_density(jd_skills, resume_text):
+    words = normalize(resume_text).split()
+    counts = Counter(words)
+    total_words = len(words)
+    density_info = []
+    for skill in jd_skills:
+        norm_skill = normalize(skill)
+        cnt = counts[norm_skill]
+        for syn in SYNONYMS.get(skill, []):
+            cnt += counts[normalize(syn)]
+        density = (cnt / total_words) * 100 if total_words > 0 else 0
+        density_info.append((skill, cnt, density))
+    return density_info
+
+st.title("AI Resume Optimizer")
+
+st.markdown("""
+Drop your Job Description and .docx resume to see how well you match — then discover personalized improvements to make your resume sparkle.  
+No cap, no fluff, just real talk for your job grind.
+""")
+
+st.subheader("Paste the full Job Description here to check your fit.")
+job_desc = st.text_area("Paste Job Description", height=130)
+
+st.subheader("Upload your .docx resume")
+uploaded_file = st.file_uploader("Select your .docx file", type=["docx"])
+
+if job_desc and uploaded_file:
+    if st.button("Check My Fit"):
+        doc = Document(uploaded_file)
+        resume_text = "\n".join(p.text for p in doc.paragraphs)
+
+        jd_skills = get_jd_skills(job_desc)
+        role_fit, matched_skills = compute_fit_score(jd_skills, resume_text)
+        missing_skills = [s for s in jd_skills if s not in matched_skills]
+
+        st.markdown(f"""
+        <div class="score-bar-container">
+            <span class="score-label">Role-Fit Score:</span><br>
+            <span style="font-size:2.3rem; color:#33ffe0; font-weight:700;">{role_fit}%</span><br>
+            <span style="color:#bebee7; font-size:1.1rem;">{feedback_text(role_fit)}</span>
+        </div>""", unsafe_allow_html=True)
+        st.progress(role_fit / 100)
+
+        st.markdown(f"<div class='skill-section'><b>✅ Matched Skills:</b> {', '.join(matched_skills) if matched_skills else 'None. Could be better!'}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='missing-section'><b>⚠️ Missing Skills:</b> {', '.join(missing_skills) if missing_skills else 'Solid set! You’re good to go.'}</div>", unsafe_allow_html=True)
+
+        st.subheader("Suggested Improvements")
+        st.info("Focus on these missing skills to level up your resume and grab recruiters’ attention.")
+
+        for skill in missing_skills:
+            st.markdown(f"<div class='suggest-box'><b>{skill}:</b> {create_suggestion(skill)}</div>", unsafe_allow_html=True)
+
+        # Keyword Density Section
+        st.subheader("Keyword Density & ATS Compatibility Check")
+        density_data = compute_keyword_density(jd_skills, resume_text)
+
+        st.markdown("""
+        <style>
+        .keyword-density-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        .keyword-density-table th, .keyword-density-table td {
+            text-align: left; padding: 8px; border-bottom: 1px solid #444; font-size: 14px;
+        }
+        .keyword-density-good { color: #70ea98; font-weight: 600; }
+        .keyword-density-low { color: #e5e020; font-weight: 600; }
+        .keyword-density-high { color: #ff5c5c; font-weight: 700; }
+        </style>
+        """, unsafe_allow_html=True)
+
+        if density_data:
+            table_html = """
+            <table class='keyword-density-table'>
+            <tr><th>Skill</th><th>Mentions</th><th>Density (%)</th><th>ATS Feedback</th></tr>
+            """
+            for skill, mentions, density in density_data:
+                if mentions == 0:
+                    status = "<span class='keyword-density-low'>Missing - add it!</span>"
+                elif mentions > 5 or density > 1.0:
+                    status = "<span class='keyword-density-high'>Too high - avoid ATS flag</span>"
+                else:
+                    status = "<span class='keyword-density-good'>Good</span>"
+                table_html += f"<tr><td>{skill}</td><td>{mentions}</td><td>{density:.2f}</td><td>{status}</td></tr>"
+            table_html += "</table>"
+            st.markdown(table_html, unsafe_allow_html=True)
+        else:
+            st.write("No JD skills detected for density analysis.")
