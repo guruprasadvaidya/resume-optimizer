@@ -1,207 +1,143 @@
-# app.py — Updated Resume Optimizer (JD-first, Process button, nicer UI, semi-manual updates)
 import streamlit as st
 from docx import Document
+import re, difflib
 from io import BytesIO
-import re
-import base64
 
-st.set_page_config(page_title="AI Resume Optimizer", layout="wide", page_icon="📄")
+# ----- App Title -----
+st.set_page_config(page_title="AI Resume Optimizer", page_icon="📝", layout="wide")
+st.title("AI Resume Optimizer")
+st.markdown("Upload your resume and compare it with a job description to get personalized suggestions!")
 
-# ---------- Skill bank (canonical + synonyms). Add names you want supported ----------
+# ----- Job Description (user input) -----
+st.subheader("Step 1: Paste Job Description")
+job_desc_input = st.text_area("Paste the Job Description here...", height=150)
+
+# ----- Upload Resume -----
+st.subheader("Step 2: Upload Resume (.docx)")
+uploaded_file = st.file_uploader("Upload your resume", type="docx")
+
+# ----- Canonical skills & synonyms -----
 CANONICAL_SKILLS = [
-    "python","sql","pytorch","tensorflow","scikit-learn","pandas","numpy","matplotlib",
-    "streamlit","fastapi","docker","kubernetes","react","node.js","nodejs","express.js",
-    "mongodb","mysql","git","nlp","natural language processing","computer vision",
-    "ocr","onnx","triton","huggingface","transformers","model deployment","data infrastructure",
-    "etl","data engineering","prompt engineering","langchain","rag","rest api","api",
-    "aws","gcp","google cloud","databricks","streamlit cloud","linux"
+    "python","pytorch","tensorflow","scikit-learn","pandas","numpy","sql","nlp",
+    "computer vision","ocr","transformers","huggingface","onnx","triton","docker",
+    "streamlit","fastapi","data infrastructure","model deployment"
 ]
+
 SYNONYMS = {
-    "node.js": ["nodejs","node js"],
-    "nlp": ["natural language processing"],
-    "rest api": ["restapi","api","rest"],
-    "react": ["reactjs","react.js"],
-    "google cloud": ["gcp"],
-    "model deployment": ["deployment","deploy"],
-    "computer vision": ["cv","vision"]
+    "pytorch":["torch"],
+    "nlp":["natural language processing"],
+    "computer vision":["cv","vision"],
+    "transformers":["hugging face"],
+    "onnx":["onnxruntime"],
+    "ocr":["tesseract","optical character recognition"],
+    "model deployment":["deploy","deployment"],
+    "data infrastructure":["data pipeline","etl"]
 }
-# ensure longer multi-word skills are matched first
-ALL_SKILLS = sorted(CANONICAL_SKILLS, key=lambda s: -len(s))
 
+EXAMPLE_TASKS = {
+    "pytorch": "trained a small CNN on CIFAR-10 using PyTorch and reported accuracy improvements",
+    "nlp": "built NER/text-classification pipelines using Hugging Face transformers",
+    "computer vision": "implemented a simple object detection pipeline",
+    "ocr": "used Tesseract/Donut to extract text from scanned documents",
+    "model deployment": "deployed a model as a REST API using FastAPI and Docker",
+    "data infrastructure": "created a mini ETL pipeline to clean CSV data"
+}
 
-# ---------- Helpers ----------
-def normalize_text(text: str) -> str:
-    return re.sub(r'\s+', ' ', text.strip().lower())
+# ----- Helper Functions -----
+def normalize(s): return re.sub(r'[^a-z0-9]','',s.lower())
 
-def find_skills_in_text(text: str):
-    """Return set of canonical skill names found in text (case-insensitive)."""
-    found = set()
-    if not text:
-        return found
-    t = text.lower()
-    for skill in ALL_SKILLS:
-        # consider skill + synonyms
-        candidates = [skill] + SYNONYMS.get(skill, [])
-        for cand in candidates:
-            # word-boundary match for multiword phrases
-            pattern = r'\b' + re.escape(cand.lower()) + r'\b'
-            if re.search(pattern, t):
-                found.add(skill)
-                break
-    return found
+def text_tokens_and_bigrams(text):
+    tokens = re.findall(r'\w+', text.lower())
+    bigrams = [' '.join(tokens[i:i+2]) for i in range(len(tokens)-1)]
+    return tokens + bigrams
 
-def extract_text_from_docx_file(file_obj):
-    doc = Document(file_obj)
-    texts = [p.text for p in doc.paragraphs]
-    return "\n".join(texts)
+def match_skill(skill, resume_text):
+    skill_norm = normalize(skill)
+    resume_norm = normalize(resume_text)
+    if skill_norm in resume_norm:
+        return True
+    if any(normalize(syn) in resume_norm for syn in SYNONYMS.get(skill,[])):
+        return True
+    tokens = text_tokens_and_bigrams(resume_text)
+    match = difflib.get_close_matches(skill.lower(), tokens, n=1, cutoff=0.85)
+    return bool(match)
 
 def create_suggestion_for_skill(skill):
-    """Gentle, honest suggestion templates (not fake claims)."""
-    return f"Highlight experience with {skill} — e.g., 'Worked with {skill} in project X' or add a short project/example."
+    task = EXAMPLE_TASKS.get(skill.lower(), None)
+    if task:
+        return f"- Implemented {skill}: {task}."
+    return f"- Worked with {skill}: describe project briefly."
 
-def insert_skills_into_docx(doc_file, skills_to_add, suggestions_to_add):
-    """
-    doc_file: file-like or path
-    skills_to_add: list of canonical skill names to insert into existing SKILLS paragraph (inline)
-    suggestions_to_add: list of suggestion strings (will be appended in a 'Suggested additions' section)
-    Returns BytesIO of updated docx.
-    """
-    doc = Document(doc_file)
-    skills_block_found = False
-
-    # try to find paragraph that looks like a skills header or skills list
-    for para in doc.paragraphs:
-        if re.search(r'\bskills\b', para.text, flags=re.IGNORECASE):
-            # append new skills inline separated by " | "
-            append_text = " | " + " | ".join(skills_to_add) if skills_to_add else ""
-            # keep styling by adding a run (does not replace existing formatting)
-            run = para.add_run(append_text)
-            run.bold = True
-            skills_block_found = True
+def insert_skills_into_docx(file, skills, bullets):
+    file.seek(0)
+    doc = Document(file)
+    # Add missing skills to skills section
+    for p in doc.paragraphs:
+        if "SKILLS" in p.text.upper():
+            current = p.text
+            new_skills = current + " | " + " | ".join(skills)
+            p.text = new_skills
             break
-
-    if not skills_block_found and skills_to_add:
-        # fallback: add a new 'Skills' heading at the end and add skills
-        doc.add_paragraph("\nSKILLS", style='Heading 2')
-        p = doc.add_paragraph(" | ".join(skills_to_add))
-        p.runs[0].bold = True
-
-    # Append a "Suggested additions" block so we don't ruin other sections
-    if suggestions_to_add:
-        doc.add_paragraph("\nSuggested additions:", style='Heading 2')
-        for s in suggestions_to_add:
-            p = doc.add_paragraph()
-            p.add_run("• " + s)
-
+    # Add bullets at end
+    if bullets:
+        doc.add_paragraph("\n--- Added Skills / Projects ---")
+        for b in bullets:
+            doc.add_paragraph(b)
     buf = BytesIO()
     doc.save(buf)
     buf.seek(0)
     return buf
 
+# ----- Process Button -----
+if job_desc_input and uploaded_file:
+    if st.button("▶️ Process Resume"):
+        doc = Document(uploaded_file)
+        resume_text = "\n".join([p.text for p in doc.paragraphs])
 
-# ---------- CSS (light) ----------
-st.markdown("""
-<style>
-.badge {
-  display:inline-block;
-  padding:6px 10px;
-  margin:4px 6px 4px 0;
-  border-radius:12px;
-  font-weight:600;
-}
-.badge-green { background:#e6ffef; color:#0b6b39; border:1px solid #0b6b39; }
-.badge-red { background:#fff0f0; color:#8b0000; border:1px solid #b30000; }
-.card { background:#fffdf5; padding:12px; border-radius:10px; border:1px solid #f0e2b6; margin-bottom:10px; }
-.small-muted { color:#6b6b6b; font-size:13px; }
-</style>
-""", unsafe_allow_html=True)
+        # ----- Identify Skills -----
+        jd_norm = normalize(job_desc_input)
+        jd_skills = [s for s in CANONICAL_SKILLS if normalize(s) in jd_norm or any(normalize(syn) in jd_norm for syn in SYNONYMS.get(s,[]))]
+        matched = [s for s in jd_skills if match_skill(s, resume_text)]
+        missing = [s for s in jd_skills if s not in matched]
+        score = round(len(matched)/ (len(jd_skills) or 1) * 100,2)
 
+        # ----- Display results in cards -----
+        st.subheader(f"🔎 Role-fit Score: {score}%")
 
-# ---------- UI Layout ----------
-st.title("📄 AI Resume Optimizer")
-st.write("Paste the Job Description first, then upload your resume. Click **Process** to analyze. Select suggestions to include in the updated resume.")
+        st.markdown(
+            f"<div style='background-color:#d4edda;padding:12px;border-radius:8px'>"
+            f"<b>✅ Matched Skills:</b> {', '.join(matched) if matched else 'None'}</div>", unsafe_allow_html=True)
 
-# JD first (as requested)
-jd_input = st.text_area("1) Paste Job Description (any format):", height=220, placeholder="Paste a job description — paragraphs, bullets, anything.")
-st.write("")  # spacing
+        st.markdown(
+            f"<div style='background-color:#f8d7da;padding:12px;border-radius:8px'>"
+            f"<b>⚠️ Missing Skills:</b> {', '.join(missing) if missing else 'None'}</div>", unsafe_allow_html=True)
 
-col1, col2 = st.columns([1,1])
-with col1:
-    uploaded_file = st.file_uploader("2) Upload Resume (.docx)", type=["docx"])
-with col2:
-    st.write("UI Tip")
-    st.info("Order: JD → Resume → Process. After process: select suggestions, confirm then apply.")
-
-# Process button (better UX than Ctrl+Enter)
-if st.button("Process"):
-    if not jd_input or not uploaded_file:
-        st.error("Please provide both Job Description and Resume (.docx).")
-    else:
-        # extract texts
-        jd_text = normalize_text(jd_input)
-        resume_text = normalize_text(extract_text_from_docx_file(uploaded_file))
-
-        # extract skills robustly
-        jd_skills = find_skills_in_text(jd_text)
-        resume_skills = find_skills_in_text(resume_text)
-
-        matched = sorted(list(jd_skills & resume_skills))
-        missing = sorted(list(jd_skills - resume_skills))
-
-        # role-fit (avoid division by zero)
-        role_fit = round((len(matched) / (len(jd_skills) if jd_skills else 1)) * 100, 1)
-
-        # display summary
-        st.markdown(f"### 🔎 Role-fit score: **{role_fit}%**")
-        st.markdown("<div class='small-muted'>Breakdown: matched / required skills</div>", unsafe_allow_html=True)
-
-        # badges for matched
-        st.write("**✅ Matched skills:**")
-        if matched:
-            for s in matched:
-                st.markdown(f"<span class='badge badge-green'>{s}</span>", unsafe_allow_html=True)
-        else:
-            st.info("No matched skills found (expected for very different JD).")
-
-        st.write("**⚠️ Missing skills (from JD):**")
-        if missing:
-            for s in missing:
-                st.markdown(f"<span class='badge badge-red'>{s}</span>", unsafe_allow_html=True)
-        else:
-            st.info("No missing skills found.")
-
-        # suggestions cards with checkboxes (semi-manual)
-        st.write("**✍️ Suggested resume improvements**")
+        # ----- Suggested bullets with selection -----
         suggestion_items = []
-        for i, skill in enumerate(missing):
-            suggestion_text = create_suggestion_for_skill(skill)
-            # show as card with checkbox
-            st.markdown(f"<div class='card'><b>{skill}</b><div class='small-muted' style='margin-top:6px'>{suggestion_text}</div></div>", unsafe_allow_html=True)
-            selected = st.checkbox(f"Add suggestion for '{skill}'", key=f"sel_{i}")
-            if selected:
-                # allow choice: add to Skills (inline) or add a bullet in Suggested additions
-                choice = st.radio(f"Where to add '{skill}'?", ("Add to Skills", "Add as bullet"), key=f"where_{i}")
-                suggestion_items.append((skill, suggestion_text, choice))
+        if missing:
+            st.subheader("✍️ Suggested improvements")
+            for i, skill in enumerate(missing):
+                suggestion_text = create_suggestion_for_skill(skill)
+                st.markdown(
+                    f"<div style='background-color:#fff3cd;padding:12px;border-radius:8px;margin-bottom:8px'>"
+                    f"<b>{skill}</b><br>{suggestion_text}</div>", unsafe_allow_html=True)
+                selected = st.checkbox(f"Add '{skill}'?", key=f"sel_{i}")
+                if selected:
+                    choice = st.radio(f"Where to add '{skill}'?", ("Add to Skills", "Add as bullet"), key=f"where_{i}")
+                    suggestion_items.append((skill, suggestion_text, choice))
 
-        if not missing:
-            st.success("No suggestions needed — your resume already includes the JD skills!")
+            # confirmation + apply
+            if suggestion_items:
+                confirm = st.checkbox("✅ I confirm I want to apply these suggestions to my resume.")
+                apply_btn = st.button("⬇️ Apply & Download Updated Resume", disabled=not confirm)
 
-        # confirmation + apply
-        if suggestion_items:
-            st.write("")
-            confirm = st.checkbox("I confirm I want to add the selected items to my resume (semi-manual, you'll get updated file).")
-            if confirm:
-                if st.button("Apply selected to resume and download updated .docx"):
-                    # Re-open uploaded_file (stream)
-                    uploaded_file.seek(0)
-                    skills_to_add = [s for s, _, choice in suggestion_items if choice == "Add to Skills"]
-                    bullets_to_add = [template for _, template, choice in suggestion_items if choice == "Add as bullet"]
-
-                    updated_buf = insert_skills_into_docx(uploaded_file, skills_to_add, bullets_to_add)
-
-                    st.success("Updated resume ready — file preserves original formatting as much as possible.")
+                if apply_btn and confirm:
+                    updated_buf = insert_skills_into_docx(uploaded_file,
+                                                         [s for s, _, c in suggestion_items if c=="Add to Skills"],
+                                                         [b for _, b, c in suggestion_items if c=="Add as bullet"])
+                    st.success("Resume updated with suggestions!")
                     st.download_button(
-                        label="⬇️ Download updated resume (.docx)",
+                        label="📥 Download updated resume",
                         data=updated_buf.getvalue(),
                         file_name="resume_updated.docx",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
