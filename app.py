@@ -1,99 +1,98 @@
 import streamlit as st
-from docx import Document
-import re, difflib
+import difflib
+import docx
+from io import BytesIO
 
-# ----- App Title -----
-st.title("AI Resume Optimizer")
-st.markdown("Upload your resume and see how it fits the job description!")
+# ------------------------------
+# Helper Functions
+# ------------------------------
 
-# ----- Job Description Input -----
-job_desc = st.text_area(
-    "Paste the Job Description here:",
-    height=200,
-    placeholder="Enter the JD text here..."
-)
+def extract_text_from_docx(file):
+    doc = docx.Document(file)
+    return "\n".join([para.text for para in doc.paragraphs])
 
-# ----- Canonical skills & synonyms -----
-CANONICAL_SKILLS = [
-    "python","pytorch","tensorflow","scikit-learn","pandas","numpy","sql","nlp",
-    "computer vision","ocr","transformers","huggingface","onnx","triton","docker",
-    "streamlit","fastapi","data infrastructure","model deployment"
-]
+def save_docx_with_updates(original_file, matched_skills, missing_skills, suggestions):
+    doc = docx.Document(original_file)
+    
+    # Insert missing skills into Skills section if found
+    for para in doc.paragraphs:
+        if "SKILLS" in para.text.upper():
+            run = para.add_run("\n" + ", ".join(missing_skills))
+            run.bold = True
+    
+    # Add suggestions at relevant sections
+    for para in doc.paragraphs:
+        if "EXPERIENCE" in para.text.upper() or "PROJECT" in para.text.upper():
+            for s in suggestions:
+                para.add_run(f"\n• {s}")
+    
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer
 
-SYNONYMS = {
-    "pytorch":["torch"],
-    "nlp":["natural language processing"],
-    "computer vision":["cv","vision"],
-    "transformers":["hugging face"],
-    "onnx":["onnxruntime"],
-    "ocr":["tesseract","optical character recognition"],
-    "model deployment":["deploy","deployment"],
-    "data infrastructure":["data pipeline","etl"]
-}
+def analyze_resume(resume_text, jd_text):
+    resume_words = set(resume_text.lower().split())
+    jd_words = set(jd_text.lower().split())
 
-EXAMPLE_TASKS = {
-    "pytorch": "trained a small CNN on CIFAR-10 using PyTorch and reported accuracy improvements",
-    "nlp": "built NER/text-classification pipelines using Hugging Face transformers",
-    "computer vision": "implemented a simple object detection pipeline",
-    "ocr": "used Tesseract/Donut to extract text from scanned documents",
-    "model deployment": "deployed a model as a REST API using FastAPI and Docker",
-    "data infrastructure": "created a mini ETL pipeline to clean CSV data"
-}
+    matched = list(resume_words & jd_words)
+    missing = list(jd_words - resume_words)
 
-# ----- Helper Functions -----
-def normalize(s): return re.sub(r'[^a-z0-9]','',s.lower())
+    # Create simple suggestions from missing skills
+    suggestions = [f"Add experience with {skill}" for skill in missing[:5]]
 
-def text_tokens_and_bigrams(text):
-    tokens = re.findall(r'\w+', text.lower())
-    bigrams = [' '.join(tokens[i:i+2]) for i in range(len(tokens)-1)]
-    return tokens + bigrams
+    # Simple score
+    score = (len(matched) / (len(jd_words) + 1)) * 100
 
-def match_skill(skill, resume_text):
-    skill_norm = normalize(skill)
-    resume_norm = normalize(resume_text)
-    if skill_norm in resume_norm:
-        return True
-    if any(normalize(syn) in resume_norm for syn in SYNONYMS.get(skill,[])):
-        return True
-    tokens = text_tokens_and_bigrams(resume_text)
-    match = difflib.get_close_matches(skill.lower(), tokens, n=1, cutoff=0.85)
-    return bool(match)
+    return round(score, 1), matched, missing, suggestions
 
-# ----- Upload Resume -----
-uploaded_file = st.file_uploader("Upload your resume (.docx)", type="docx")
+# ------------------------------
+# Streamlit UI
+# ------------------------------
 
-if uploaded_file and job_desc:
-    doc = Document(uploaded_file)
-    resume_text = "\n".join([p.text for p in doc.paragraphs])
+st.set_page_config(page_title="AI Resume Optimizer", layout="wide")
+st.title("📄 AI Resume Optimizer")
 
-    # ----- Identify Skills -----
-    jd_norm = normalize(job_desc)
-    jd_skills = [s for s in CANONICAL_SKILLS if normalize(s) in jd_norm or any(normalize(syn) in jd_norm for syn in SYNONYMS.get(s,[]))]
-    matched = [s for s in jd_skills if match_skill(s, resume_text)]
-    missing = [s for s in jd_skills if s not in matched]
-    score = round(len(matched)/ (len(jd_skills) or 1) * 100,2)
+uploaded_file = st.file_uploader("Upload your Resume (.docx)", type=["docx"])
+jd_input = st.text_area("Paste the Job Description here:")
 
-    # ----- Generate Suggested Bullets -----
-    suggested_bullets = []
-    for s in missing[:6]:
-        task = EXAMPLE_TASKS.get(s.lower(), None)
-        if task: suggested_bullets.append(f"- Implemented {s}: {task}.")
-        else: suggested_bullets.append(f"- Worked with {s}: describe project briefly.")
+if uploaded_file and jd_input:
+    resume_text = extract_text_from_docx(uploaded_file)
+    score, matched, missing, suggestions = analyze_resume(resume_text, jd_input)
 
-    # ----- Show Results -----
-    st.subheader(f"🔎 Role-fit Score: {score}%")
-    st.write("✅ Matched Skills:", matched)
-    st.write("⚠️ Missing Skills:", missing)
-    st.write("✍️ Suggested bullets to add:")
-    for b in suggested_bullets:
-        st.write(b)
+    # Display results
+    st.markdown(f"## 🔎 Role-fit Score: **{score}%**")
 
-    # ----- Save Optimized Resume -----
-    if suggested_bullets:
-        doc.add_paragraph("\n--- Added Skills / Projects for Role Fit ---")
-        for b in suggested_bullets:
-            doc.add_paragraph(b)
-        doc.save("resume_optimized.docx")
-        st.success("💾 Optimized resume saved! Download below:")
-        with open("resume_optimized.docx", "rb") as f:
-            st.download_button("Download Resume", f, file_name="resume_optimized.docx")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("### ✅ Matched Skills")
+        if matched:
+            st.success(", ".join(matched))
+        else:
+            st.info("No skills matched.")
+
+    with col2:
+        st.markdown("### ⚠️ Missing Skills")
+        if missing:
+            st.error(", ".join(missing))
+        else:
+            st.info("No missing skills detected.")
+
+    with col3:
+        st.markdown("### ✍️ Suggested Bullets")
+        if suggestions:
+            for s in suggestions:
+                st.write(f"• {s}")
+        else:
+            st.info("No suggestions available.")
+
+    # Generate updated resume
+    if st.button("📥 Download Updated Resume"):
+        updated_doc = save_docx_with_updates(uploaded_file, matched, missing, suggestions)
+        st.download_button(
+            label="Download Resume (.docx)",
+            data=updated_doc,
+            file_name="Updated_Resume.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
