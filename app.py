@@ -1,22 +1,21 @@
 import streamlit as st
 from docx import Document
-import re, difflib
 from io import BytesIO
+import re, difflib
 
-# ----- App Title -----
 st.set_page_config(page_title="AI Resume Optimizer", page_icon="📝", layout="wide")
 st.title("AI Resume Optimizer")
-st.markdown("Upload your resume and compare it with a job description to get personalized suggestions!")
+st.markdown("Analyze your resume against a Job Description and get suggestions to improve role-fit!")
 
-# ----- Job Description (user input) -----
+# --- Step 1: Job Description ---
 st.subheader("Step 1: Paste Job Description")
 job_desc_input = st.text_area("Paste the Job Description here...", height=150)
 
-# ----- Upload Resume -----
+# --- Step 2: Upload Resume ---
 st.subheader("Step 2: Upload Resume (.docx)")
 uploaded_file = st.file_uploader("Upload your resume", type="docx")
 
-# ----- Canonical skills & synonyms -----
+# --- Canonical Skills & Synonyms ---
 CANONICAL_SKILLS = [
     "python","pytorch","tensorflow","scikit-learn","pandas","numpy","sql","nlp",
     "computer vision","ocr","transformers","huggingface","onnx","triton","docker",
@@ -43,102 +42,90 @@ EXAMPLE_TASKS = {
     "data infrastructure": "created a mini ETL pipeline to clean CSV data"
 }
 
-# ----- Helper Functions -----
+# --- Helper Functions ---
 def normalize(s): return re.sub(r'[^a-z0-9]','',s.lower())
 
-def text_tokens_and_bigrams(text):
-    tokens = re.findall(r'\w+', text.lower())
-    bigrams = [' '.join(tokens[i:i+2]) for i in range(len(tokens)-1)]
-    return tokens + bigrams
-
-def match_skill(skill, resume_text):
-    skill_norm = normalize(skill)
-    resume_norm = normalize(resume_text)
-    if skill_norm in resume_norm:
+def match_skill(skill, text):
+    text_norm = normalize(text)
+    if normalize(skill) in text_norm:
         return True
-    if any(normalize(syn) in resume_norm for syn in SYNONYMS.get(skill,[])):
+    if any(normalize(syn) in text_norm for syn in SYNONYMS.get(skill,[])):
         return True
-    tokens = text_tokens_and_bigrams(resume_text)
-    match = difflib.get_close_matches(skill.lower(), tokens, n=1, cutoff=0.85)
-    return bool(match)
+    return False
 
-def create_suggestion_for_skill(skill):
+def create_suggestion(skill):
     task = EXAMPLE_TASKS.get(skill.lower(), None)
     if task:
-        return f"- Implemented {skill}: {task}."
-    return f"- Worked with {skill}: describe project briefly."
+        return f"Implemented {skill}: {task}."
+    return f"Worked with {skill}: describe project briefly."
 
-def insert_skills_into_docx(file, skills, bullets):
-    file.seek(0)
-    doc = Document(file)
-    # Add missing skills to skills section
+def insert_skills_and_bullets(doc_file, skills_to_add, bullets_to_add):
+    doc_file.seek(0)
+    doc = Document(doc_file)
+    # Add missing skills to Skills section
     for p in doc.paragraphs:
         if "SKILLS" in p.text.upper():
             current = p.text
-            new_skills = current + " | " + " | ".join(skills)
+            new_skills = current + " | " + " | ".join(skills_to_add)
             p.text = new_skills
             break
     # Add bullets at end
-    if bullets:
+    if bullets_to_add:
         doc.add_paragraph("\n--- Added Skills / Projects ---")
-        for b in bullets:
+        for b in bullets_to_add:
             doc.add_paragraph(b)
     buf = BytesIO()
     doc.save(buf)
     buf.seek(0)
     return buf
 
-# ----- Process Button -----
+# --- Step 3: Process Button ---
 if job_desc_input and uploaded_file:
-    if st.button("▶️ Process Resume"):
+    if st.button("▶️ Process"):
         doc = Document(uploaded_file)
         resume_text = "\n".join([p.text for p in doc.paragraphs])
-
-        # ----- Identify Skills -----
-        jd_norm = normalize(job_desc_input)
-        jd_skills = [s for s in CANONICAL_SKILLS if normalize(s) in jd_norm or any(normalize(syn) in jd_norm for syn in SYNONYMS.get(s,[]))]
-        matched = [s for s in jd_skills if match_skill(s, resume_text)]
-        missing = [s for s in jd_skills if s not in matched]
-        score = round(len(matched)/ (len(jd_skills) or 1) * 100,2)
-
-        # ----- Display results in cards -----
-        st.subheader(f"🔎 Role-fit Score: {score}%")
-
+        
+        # --- Match Skills ---
+        jd_skills = [s for s in CANONICAL_SKILLS if normalize(s) in normalize(job_desc_input) or any(normalize(syn) in normalize(job_desc_input) for syn in SYNONYMS.get(s,[]))]
+        matched_skills = [s for s in jd_skills if match_skill(s, resume_text)]
+        missing_skills = [s for s in jd_skills if s not in matched_skills]
+        role_fit = round(len(matched_skills) / (len(jd_skills) or 1) * 100, 1)
+        
+        # --- Display in Cards ---
+        st.subheader(f"🔎 Role-fit Score: {role_fit}%")
         st.markdown(
-            f"<div style='background-color:#d4edda;padding:12px;border-radius:8px'>"
-            f"<b>✅ Matched Skills:</b> {', '.join(matched) if matched else 'None'}</div>", unsafe_allow_html=True)
-
+            f"<div style='background-color:#e6ffed;padding:12px;border-radius:10px'>"
+            f"<b>✅ Matched Skills:</b> {', '.join(matched_skills) if matched_skills else 'None'}</div>", unsafe_allow_html=True)
         st.markdown(
-            f"<div style='background-color:#f8d7da;padding:12px;border-radius:8px'>"
-            f"<b>⚠️ Missing Skills:</b> {', '.join(missing) if missing else 'None'}</div>", unsafe_allow_html=True)
+            f"<div style='background-color:#ffe6e6;padding:12px;border-radius:10px'>"
+            f"<b>⚠️ Missing Skills:</b> {', '.join(missing_skills) if missing_skills else 'None'}</div>", unsafe_allow_html=True)
 
-        # ----- Suggested bullets with selection -----
-        suggestion_items = []
-        if missing:
-            st.subheader("✍️ Suggested improvements")
-            for i, skill in enumerate(missing):
-                suggestion_text = create_suggestion_for_skill(skill)
-                st.markdown(
-                    f"<div style='background-color:#fff3cd;padding:12px;border-radius:8px;margin-bottom:8px'>"
-                    f"<b>{skill}</b><br>{suggestion_text}</div>", unsafe_allow_html=True)
-                selected = st.checkbox(f"Add '{skill}'?", key=f"sel_{i}")
-                if selected:
-                    choice = st.radio(f"Where to add '{skill}'?", ("Add to Skills", "Add as bullet"), key=f"where_{i}")
-                    suggestion_items.append((skill, suggestion_text, choice))
-
-            # confirmation + apply
-            if suggestion_items:
-                confirm = st.checkbox("✅ I confirm I want to apply these suggestions to my resume.")
-                apply_btn = st.button("⬇️ Apply & Download Updated Resume", disabled=not confirm)
-
-                if apply_btn and confirm:
-                    updated_buf = insert_skills_into_docx(uploaded_file,
-                                                         [s for s, _, c in suggestion_items if c=="Add to Skills"],
-                                                         [b for _, b, c in suggestion_items if c=="Add as bullet"])
-                    st.success("Resume updated with suggestions!")
+        # --- Suggested Improvements Section ---
+        st.subheader("✍️ Suggested Improvements")
+        selected_for_resume = []
+        for i, skill in enumerate(missing_skills):
+            suggestion_text = create_suggestion(skill)
+            st.markdown(
+                f"<div style='background-color:#fff8e6;padding:10px;border-radius:10px;margin-bottom:5px'>"
+                f"<b>{skill}</b>: {suggestion_text}</div>", unsafe_allow_html=True)
+            if st.checkbox(f"Add '{skill}'?", key=f"sel_{i}"):
+                choice = st.radio(f"Add '{skill}' to:", ("Skills Section", "Bullet Points at End"), key=f"choice_{i}")
+                selected_for_resume.append((skill, suggestion_text, choice))
+        
+        if selected_for_resume:
+            confirm = st.checkbox("✅ Confirm to apply selected suggestions to your resume")
+            if confirm:
+                apply_btn = st.button("⬇️ Apply & Download Updated Resume")
+                if apply_btn:
+                    updated_file = insert_skills_and_bullets(
+                        uploaded_file,
+                        [s for s, _, c in selected_for_resume if c=="Skills Section"],
+                        [b for _, b, c in selected_for_resume if c=="Bullet Points at End"]
+                    )
+                    st.success("Updated resume ready for download!")
                     st.download_button(
-                        label="📥 Download updated resume",
-                        data=updated_buf.getvalue(),
+                        "📥 Download Updated Resume",
+                        updated_file.getvalue(),
                         file_name="resume_updated.docx",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                     )
