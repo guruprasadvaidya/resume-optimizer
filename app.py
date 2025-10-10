@@ -195,18 +195,23 @@ if job_desc and uploaded_file:
             </div>""", unsafe_allow_html=True)
             st.progress(role_fit / 100)
 
-            matched_text = ', '.join(matched_skills) if matched_skills else "None detected this time. Don’t be discouraged — every pro starts somewhere! 💪🙂"
-            st.markdown(f"<div class='skill-section'><b>✅ Skills Matched:</b> {matched_text}</div>", unsafe_allow_html=True)
+            # Updated messaging to avoid contradictions
+            if matched_skills:
+                matched_text = ', '.join(matched_skills)
+                st.markdown(f"<div class='skill-section'><b>✅ Skills Matched:</b> {matched_text}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div class='skill-section'><b>✅ Skills Matched:</b> None detected this time. Don’t be discouraged — every pro starts somewhere! 💪🙂</div>", unsafe_allow_html=True)
 
-            missing_text = ', '.join(missing_skills) if missing_skills else "All key skills matched! You’re looking solid for this role. 🌟"
-            st.markdown(f"<div class='missing-section'><b>⚠️ Opportunities to Enhance:</b> {missing_text}</div>", unsafe_allow_html=True)
-
-            st.subheader("Suggested Improvements")
             if missing_skills:
+                missing_text = ', '.join(missing_skills)
+                st.markdown(f"<div class='missing-section'><b>⚠️ Opportunities to Enhance:</b> {missing_text}</div>", unsafe_allow_html=True)
+                st.subheader("Suggested Improvements")
                 st.info("Focus on these areas to shine brighter and land that interview! 🌟")
                 for skill in missing_skills:
                     st.markdown(f"<div class='suggest-box'><b>{skill}:</b> {create_suggestion(skill)}</div>", unsafe_allow_html=True)
             else:
+                st.markdown("<div class='missing-section'><b>⚠️ Opportunities to Enhance:</b> None! You’re looking solid for this role. 🌟</div>", unsafe_allow_html=True)
+                st.subheader("Suggested Improvements")
                 st.info("You’re all set! Keep your resume updated and tailored for other roles. 🚀")
 
             st.subheader("Keyword Density & ATS Compatibility Check")
@@ -242,5 +247,4 @@ if job_desc and uploaded_file:
             else:
                 st.write("No JD skills detected for density analysis.")
 
-else:
-    st.info("Please paste the Job Description and upload your resume to get started.")
+# Notice: No info message shown by default if inputs are missing, keeping UI clean.
