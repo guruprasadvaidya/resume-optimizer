@@ -1,5 +1,6 @@
 import streamlit as st
 from docx import Document
+import pdfplumber
 from io import BytesIO
 import difflib
 import re
@@ -98,27 +99,47 @@ def get_jd_skills(jd_text):
     norm_jd = normalize(jd_text)
     return [s for s in CANONICAL_SKILLS if normalize(s) in norm_jd or any(normalize(syn) in norm_jd for syn in SYNONYMS.get(s, []))]
 
+def extract_resume_text(uploaded_file):
+    file_type = uploaded_file.name.split('.')[-1].lower()
+    if file_type == "docx":
+        doc = Document(uploaded_file)
+        return "\n".join(p.text for p in doc.paragraphs)
+    elif file_type == "pdf":
+        text = ""
+        with pdfplumber.open(uploaded_file) as pdf:
+            for page in pdf.pages:
+                content = page.extract_text()
+                if content:
+                    text += content + '\n'
+        return text
+    else:
+        return None
+
 def compute_fit_score(jd_skills, resume_text):
-    score = 0
+    norm_resume = normalize(resume_text)
     matched = []
+    total_score = 0
     for skill in jd_skills:
         synonyms = [skill] + SYNONYMS.get(skill, [])
-        found = False
+        skill_score = 0
         for target in synonyms:
-            if normalize(target) in normalize(resume_text):
-                found = True
+            norm_target = normalize(target)
+            if norm_target in norm_resume:
+                skill_score = 1
                 break
-            for word in resume_text.split():
-                if difflib.SequenceMatcher(None, normalize(word), normalize(target)).ratio() > 0.74:
-                    found = True
+            for word in norm_resume.split():
+                sim_ratio = difflib.SequenceMatcher(None, word, norm_target).ratio()
+                if sim_ratio >= 0.8:
+                    skill_score = sim_ratio
                     break
-            if found:
+            if skill_score:
                 break
-        if found:
+        if skill_score:
             matched.append(skill)
-            score += 1
+        total_score += skill_score
     denom = max(len(jd_skills), 1)
-    return round(100.0 * score / denom, 1), matched
+    fit_pct = round(100.0 * total_score / denom, 1)
+    return fit_pct, matched
 
 def feedback_text(score):
     if score < 40:
@@ -146,72 +167,73 @@ def compute_keyword_density(jd_skills, resume_text):
 st.title("AI Resume Optimizer")
 
 st.markdown("""
-Drop your Job Description and .docx resume to see how well you match — then discover personalized improvements to make your resume sparkle.  
+Drop your Job Description and .docx/.pdf resume to see how well you match — then discover personalized improvements to make your resume sparkle.   
 No cap, no fluff, just real talk for your job grind.
 """)
 
 st.subheader("Paste the full Job Description here to check your fit.")
 job_desc = st.text_area("Paste Job Description", height=130)
 
-st.subheader("Upload your .docx resume")
-uploaded_file = st.file_uploader("Select your .docx file", type=["docx"])
+st.subheader("Upload your .docx or .pdf resume")
+uploaded_file = st.file_uploader("Select your .docx or .pdf file", type=["docx", "pdf"])
 
 if job_desc and uploaded_file:
     if st.button("Check My Fit"):
-        doc = Document(uploaded_file)
-        resume_text = "\n".join(p.text for p in doc.paragraphs)
-
-        jd_skills = get_jd_skills(job_desc)
-        role_fit, matched_skills = compute_fit_score(jd_skills, resume_text)
-        missing_skills = [s for s in jd_skills if s not in matched_skills]
-
-        st.markdown(f"""
-        <div class="score-bar-container">
-            <span class="score-label">Role-Fit Score:</span><br>
-            <span style="font-size:2.3rem; color:#33ffe0; font-weight:700;">{role_fit}%</span><br>
-            <span style="color:#bebee7; font-size:1.1rem;">{feedback_text(role_fit)}</span>
-        </div>""", unsafe_allow_html=True)
-        st.progress(role_fit / 100)
-
-        st.markdown(f"<div class='skill-section'><b>✅ Matched Skills:</b> {', '.join(matched_skills) if matched_skills else 'None. Could be better!'}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='missing-section'><b>⚠️ Missing Skills:</b> {', '.join(missing_skills) if missing_skills else 'Solid set! You’re good to go.'}</div>", unsafe_allow_html=True)
-
-        st.subheader("Suggested Improvements")
-        st.info("Focus on these missing skills to level up your resume and grab recruiters’ attention.")
-
-        for skill in missing_skills:
-            st.markdown(f"<div class='suggest-box'><b>{skill}:</b> {create_suggestion(skill)}</div>", unsafe_allow_html=True)
-
-        # Keyword Density Section
-        st.subheader("Keyword Density & ATS Compatibility Check")
-        density_data = compute_keyword_density(jd_skills, resume_text)
-
-        st.markdown("""
-        <style>
-        .keyword-density-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-        .keyword-density-table th, .keyword-density-table td {
-            text-align: left; padding: 8px; border-bottom: 1px solid #444; font-size: 14px;
-        }
-        .keyword-density-good { color: #70ea98; font-weight: 600; }
-        .keyword-density-low { color: #e5e020; font-weight: 600; }
-        .keyword-density-high { color: #ff5c5c; font-weight: 700; }
-        </style>
-        """, unsafe_allow_html=True)
-
-        if density_data:
-            table_html = """
-            <table class='keyword-density-table'>
-            <tr><th>Skill</th><th>Mentions</th><th>Density (%)</th><th>ATS Feedback</th></tr>
-            """
-            for skill, mentions, density in density_data:
-                if mentions == 0:
-                    status = "<span class='keyword-density-low'>Missing - add it!</span>"
-                elif mentions > 5 or density > 1.0:
-                    status = "<span class='keyword-density-high'>Too high - avoid ATS flag</span>"
-                else:
-                    status = "<span class='keyword-density-good'>Good</span>"
-                table_html += f"<tr><td>{skill}</td><td>{mentions}</td><td>{density:.2f}</td><td>{status}</td></tr>"
-            table_html += "</table>"
-            st.markdown(table_html, unsafe_allow_html=True)
+        resume_text = extract_resume_text(uploaded_file)
+        if not resume_text:
+            st.error("Could not extract text from file. Please ensure the file is valid and not scanned non-selectable PDF image.")
         else:
-            st.write("No JD skills detected for density analysis.")
+            jd_skills = get_jd_skills(job_desc)
+            role_fit, matched_skills = compute_fit_score(jd_skills, resume_text)
+            missing_skills = [s for s in jd_skills if s not in matched_skills]
+
+            st.markdown(f"""
+            <div class="score-bar-container">
+                <span class="score-label">Role-Fit Score:</span><br>
+                <span style="font-size:2.3rem; color:#33ffe0; font-weight:700;">{role_fit}%</span><br>
+                <span style="color:#bebee7; font-size:1.1rem;">{feedback_text(role_fit)}</span>
+            </div>""", unsafe_allow_html=True)
+            st.progress(role_fit / 100)
+
+            st.markdown(f"<div class='skill-section'><b>✅ Matched Skills:</b> {', '.join(matched_skills) if matched_skills else 'None. Could be better!'}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='missing-section'><b>⚠️ Missing Skills:</b> {', '.join(missing_skills) if missing_skills else 'Solid set! You’re good to go.'}</div>", unsafe_allow_html=True)
+
+            st.subheader("Suggested Improvements")
+            st.info("Focus on these missing skills to level up your resume and grab recruiters’ attention.")
+
+            for skill in missing_skills:
+                st.markdown(f"<div class='suggest-box'><b>{skill}:</b> {create_suggestion(skill)}</div>", unsafe_allow_html=True)
+
+            # Keyword Density Section
+            st.subheader("Keyword Density & ATS Compatibility Check")
+            density_data = compute_keyword_density(jd_skills, resume_text)
+
+            st.markdown("""
+            <style>
+            .keyword-density-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+            .keyword-density-table th, .keyword-density-table td {
+                text-align: left; padding: 8px; border-bottom: 1px solid #444; font-size: 14px;
+            }
+            .keyword-density-good { color: #70ea98; font-weight: 600; }
+            .keyword-density-low { color: #e5e020; font-weight: 600; }
+            .keyword-density-high { color: #ff5c5c; font-weight: 700; }
+            </style>
+            """, unsafe_allow_html=True)
+
+            if density_data:
+                table_html = """
+                <table class='keyword-density-table'>
+                <tr><th>Skill</th><th>Mentions</th><th>Density (%)</th><th>ATS Feedback</th></tr>
+                """
+                for skill, mentions, density in density_data:
+                    if mentions == 0:
+                        status = "<span class='keyword-density-low'>Missing - add it!</span>"
+                    elif mentions > 5 or density > 1.0:
+                        status = "<span class='keyword-density-high'>Too high - avoid ATS flag</span>"
+                    else:
+                        status = "<span class='keyword-density-good'>Good</span>"
+                    table_html += f"<tr><td>{skill}</td><td>{mentions}</td><td>{density:.2f}</td><td>{status}</td></tr>"
+                table_html += "</table>"
+                st.markdown(table_html, unsafe_allow_html=True)
+            else:
+                st.write("No JD skills detected for density analysis.")

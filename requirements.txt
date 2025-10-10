@@ -1,5 +1,6 @@
 streamlit
 python-docx
+pdfplumber
 pandas
 numpy
 scikit-learn
