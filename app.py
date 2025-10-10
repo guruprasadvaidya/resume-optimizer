@@ -8,10 +8,10 @@ from collections import Counter
 
 st.set_page_config(page_title="AI Resume Optimizer", page_icon="📝", layout="wide")
 
-# Dark theme CSS
+# Dark theme CSS with consistent fonts and buttons
 st.markdown("""
     <style>
-        html, body, [class*="css"] { background-color: #181a20 !important; color: #eee !important; }
+        html, body, [class*="css"] { background-color: #181a20 !important; color: #eee !important; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         .score-bar-container {
             background: #242739; border-radius: 13px; padding: 24px 34px;
             margin-bottom: 14px; text-align: center; 
@@ -142,12 +142,12 @@ def compute_fit_score(jd_skills, resume_text):
     return fit_pct, matched
 
 def feedback_text(score):
-    if score < 40:
-        return "☠️ Major gap alert - time to skill up!"
-    if score < 65:
-        return "Good start, but recruiters want more action."
+    if score < 20:
+        return "Looks like your current resume doesn’t quite align with this job description yet. No worries — this is your chance to grow and glow! 🌱✨"
+    if score < 50:
+        return "You're on the way! Focus on these skills to boost your profile and make a stronger impression. 💪🙂"
     if score < 80:
-        return "Almost there - polish a few more skills."
+        return "Almost there—polish a few more skills to shine even brighter! ✨"
     return "🔥 You’re shining, time for interviews!"
 
 def compute_keyword_density(jd_skills, resume_text):
@@ -189,22 +189,26 @@ if job_desc and uploaded_file:
 
             st.markdown(f"""
             <div class="score-bar-container">
-                <span class="score-label">Role-Fit Score:</span><br>
+                <span class="score-label">Role Match Score:</span><br>
                 <span style="font-size:2.3rem; color:#33ffe0; font-weight:700;">{role_fit}%</span><br>
                 <span style="color:#bebee7; font-size:1.1rem;">{feedback_text(role_fit)}</span>
             </div>""", unsafe_allow_html=True)
             st.progress(role_fit / 100)
 
-            st.markdown(f"<div class='skill-section'><b>✅ Matched Skills:</b> {', '.join(matched_skills) if matched_skills else 'None. Could be better!'}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='missing-section'><b>⚠️ Missing Skills:</b> {', '.join(missing_skills) if missing_skills else 'Solid set! You’re good to go.'}</div>", unsafe_allow_html=True)
+            matched_text = ', '.join(matched_skills) if matched_skills else "None detected this time. Don’t be discouraged — every pro starts somewhere! 💪🙂"
+            st.markdown(f"<div class='skill-section'><b>✅ Skills Matched:</b> {matched_text}</div>", unsafe_allow_html=True)
+
+            missing_text = ', '.join(missing_skills) if missing_skills else "All key skills matched! You’re looking solid for this role. 🌟"
+            st.markdown(f"<div class='missing-section'><b>⚠️ Opportunities to Enhance:</b> {missing_text}</div>", unsafe_allow_html=True)
 
             st.subheader("Suggested Improvements")
-            st.info("Focus on these missing skills to level up your resume and grab recruiters’ attention.")
+            if missing_skills:
+                st.info("Focus on these areas to shine brighter and land that interview! 🌟")
+                for skill in missing_skills:
+                    st.markdown(f"<div class='suggest-box'><b>{skill}:</b> {create_suggestion(skill)}</div>", unsafe_allow_html=True)
+            else:
+                st.info("You’re all set! Keep your resume updated and tailored for other roles. 🚀")
 
-            for skill in missing_skills:
-                st.markdown(f"<div class='suggest-box'><b>{skill}:</b> {create_suggestion(skill)}</div>", unsafe_allow_html=True)
-
-            # Keyword Density Section
             st.subheader("Keyword Density & ATS Compatibility Check")
             density_data = compute_keyword_density(jd_skills, resume_text)
 
@@ -237,3 +241,6 @@ if job_desc and uploaded_file:
                 st.markdown(table_html, unsafe_allow_html=True)
             else:
                 st.write("No JD skills detected for density analysis.")
+
+else:
+    st.info("Please paste the Job Description and upload your resume to get started.")
